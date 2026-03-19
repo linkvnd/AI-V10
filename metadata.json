@@ -1,0 +1,8 @@
+{
+  "name": "AI TM3",
+  "description": "Trợ lý AI thế hệ mới với khả năng nhận diện hình ảnh, phân tích tệp và các gói nâng cấp linh hoạt.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

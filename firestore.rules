@@ -1,0 +1,196 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required, immutable) - The unique identifier for the user.
+    //   - name: string (required) - The display name of the user.
+    //   - email: string (required, format: email) - The email address of the user.
+    //   - photoURL: string (optional) - The URL of the user's profile photo.
+    //   - role: string (required, enum: ["admin", "user"]) - The role of the user.
+    //   - isPro: boolean (required) - Whether the user has a premium subscription.
+    //   - premiumLevel: integer (required, range: 0-3) - The level of premium subscription.
+    //   - provider: string (optional) - The authentication provider used.
+    //
+    // Collection: chats/{uid}/sessions
+    // Document ID: {sessionId}
+    // Fields:
+    //   - title: string (required) - The title of the chat session.
+    //   - lastMessage: string (optional) - The content of the last message.
+    //   - updatedAt: timestamp (required) - The timestamp of the last update.
+    //   - createdAt: timestamp (required, immutable) - The timestamp of creation.
+    //
+    // Collection: chats/{uid}/sessions/{sessionId}/messages
+    // Document ID: {messageId}
+    // Fields:
+    //   - role: string (required, enum: ["user", "model"]) - The role of the sender.
+    //   - content: string (required) - The text content of the message.
+    //   - imageUrl: string (optional) - Optional URL for an attached image.
+    //   - fileName: string (optional) - Optional name for an attached file.
+    //   - createdAt: timestamp (required, immutable) - The timestamp of creation.
+    //
+    // Collection: premium_requests
+    // Document ID: {requestId}
+    // Fields:
+    //   - uid: string (required, immutable) - The unique identifier of the user.
+    //   - email: string (required, format: email) - The email of the user.
+    //   - name: string (required) - The name of the user.
+    //   - paymentCode: string (required) - The payment code provided.
+    //   - level: integer (required, range: 1-3) - The requested premium level.
+    //   - status: string (required, enum: ["pending", "approved", "rejected"]) - The status of the request.
+    //   - createdAt: timestamp (required, immutable) - The timestamp of creation.
+    //
+    // Collection: system
+    // Document ID: config
+    // Fields:
+    //   - qrCodeUrl: string (optional) - The URL of the payment QR code.
+    //
+    // Collection: global_messages
+    // Document ID: {messageId}
+    // Fields:
+    //   - uid: string (required, immutable) - The unique identifier of the sender.
+    //   - name: string (required) - The display name of the sender.
+    //   - photoURL: string (required) - The URL of the sender's profile photo.
+    //   - text: string (required) - The text content of the message.
+    //   - image: string (optional) - Optional base64 or URL for an attached image.
+    //   - createdAt: timestamp (required, immutable) - The timestamp of creation.
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "globalmmok24@gmail.com" && request.auth.token.email_verified == true)); // Default admin
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['uid', 'name', 'email', 'role', 'isPro', 'premiumLevel']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'user'] &&
+             data.isPro is bool &&
+             data.premiumLevel is int && data.premiumLevel >= 0 && data.premiumLevel <= 3;
+    }
+
+    function isValidSession(data) {
+      return hasRequiredFields(['title', 'updatedAt', 'createdAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.updatedAt is timestamp &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return hasRequiredFields(['role', 'content', 'createdAt']) &&
+             data.role in ['user', 'model'] &&
+             data.content is string && data.content.size() < 10000 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidPremiumRequest(data) {
+      return hasRequiredFields(['uid', 'email', 'name', 'paymentCode', 'level', 'status', 'createdAt']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.name is string && data.name.size() > 0 &&
+             data.paymentCode is string && data.paymentCode.size() > 0 &&
+             data.level is int && data.level >= 1 && data.level <= 3 &&
+             data.status in ['pending', 'approved', 'rejected'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidGlobalMessage(data) {
+      return hasRequiredFields(['uid', 'name', 'photoURL', 'text', 'createdAt']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.name is string && data.name.size() > 0 &&
+             data.photoURL is string &&
+             data.text is string && data.text.size() < 5000 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Users can create their own profile, but only with 'user' role and level 0
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      request.resource.data.role == 'user' && 
+                      request.resource.data.premiumLevel == 0;
+      
+      // Users can update their own profile, but cannot change role or premium status
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) &&
+                      request.resource.data.role == resource.data.role &&
+                      request.resource.data.premiumLevel == resource.data.premiumLevel &&
+                      request.resource.data.isPro == resource.data.isPro;
+      
+      // Admins can do anything
+      allow write: if isAdmin();
+    }
+
+    match /chats/{userId}/sessions/{sessionId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+      
+      match /messages/{messageId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    match /premium_requests/{requestId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidPremiumRequest(request.resource.data) && request.resource.data.status == 'pending';
+      allow update, delete: if isAdmin();
+    }
+
+    match /system/config {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /global_messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidGlobalMessage(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
